@@ -23,7 +23,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [esp-sparkbot, esp-sparkbot-touch]
+        include:
+          - board: espressif/esp-sparkbot
+            variant: esp-sparkbot
+          - board: espressif/esp-sparkbot
+            variant: esp-sparkbot-touch
+          - board: surfer-c3-1.14tft
+            variant: surfer-c3-1.14tft
     container:
       image: espressif/idf:release-v6.1
     steps:
@@ -32,8 +38,12 @@ jobs:
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
-          python scripts/build.py espressif/esp-sparkbot --name "${{ matrix.variant }}" --language zh-CN --zip
+          python scripts/build.py "${{ matrix.board }}" --name "${{ matrix.variant }}" --language zh-CN --zip
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.variant }}-firmware
-          path: releases/*.zip
+          path: |
+            releases/*.zip
+            build/xiaozhi.bin
+            build/flasher_args.json
+            build/partition_table/partition-table.bin

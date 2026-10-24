@@ -80,11 +80,18 @@ int main() {
         methods = "\n".join(definition(source, signature) for signature in (
             "void Application::ToggleConversation()",
             "void Application::HandleToggleConversationEvent()",
+            "void Application::StartTouchPrompt(TouchPrompt prompt)",
+            "void Application::HandleTouchPromptDrained()",
             "void Application::EndConversation()",
+            "void Application::EndConversationWithFarewell()",
+            "void Application::StopNotification()",
             "void Application::HandleToggleChatEvent()",
             "void Application::ContinueOpenAudioChannel(ListeningMode mode)",
             "void Application::ContinueWakeWordInvoke(const std::string& wake_word)",
         ))
+        closed = source.split("protocol_->OnAudioChannelClosed(", 1)[1]
+        scheduled = definition(closed, "Schedule([this]()")
+        methods += "\nvoid Application::HandleClosed() " + scheduled[scheduled.index("{"):]
         tts = source.split('} else if (strcmp(type->valuestring, "tts") == 0)', 1)[1]
         for state, method in (("start", "TtsStart"), ("stop", "TtsStop")):
             branch = tts.split(f'strcmp(state->valuestring, "{state}") == 0', 1)[1]
@@ -97,11 +104,17 @@ int main() {
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 #define CONFIG_SEND_WAKE_WORD_DATA 0
+#define CONFIG_SPARKBOT_TOUCH_CONVERSATION 0
+namespace Lang::Sounds {
+const std::string_view OGG_TOUCH_GREETING = "greeting";
+const std::string_view OGG_TOUCH_FAREWELL = "farewell";
+}
 constexpr unsigned MAIN_EVENT_TOGGLE_CONVERSATION = 1 << 15;
 constexpr unsigned MAIN_EVENT_WAKE_WORD_DETECTED = 1 << 2;
 unsigned xEventGroupClearBits(unsigned* events, unsigned mask) {
@@ -116,16 +129,35 @@ enum DeviceState {
 enum ListeningMode { kListeningModeAutoStop, kListeningModeManualStop };
 enum AbortReason { kAbortReasonNone };
 enum class PowerSaveLevel { LOW_POWER, PERFORMANCE };
+struct Display {
+    std::string text;
+    void SetChatMessage(const char*, const char* message) { text = message; }
+};
 struct Board {
+    Display display;
     PowerSaveLevel level = PowerSaveLevel::LOW_POWER;
     static Board& GetInstance() { static Board b; return b; }
     void SetPowerSaveLevel(PowerSaveLevel next) { level = next; }
+    Display* GetDisplay() { return &display; }
+};
+struct PromptPlayer {
+    bool active = false, drained = false;
+    int starts = 0;
+    std::string_view sound;
+    bool Start(std::string_view value) { active = true; drained = false; sound = value; ++starts; return true; }
+    void Stop() { active = false; drained = false; }
+    bool OnPlaybackDrained() { if (!active || !drained) return false; active = false; return true; }
+};
+struct NotifyPlayer {
+    void Stop() {}
+    bool IsBusy() { return false; }
 };
 struct Audio {
-    bool recording = true, testing = false;
+    bool recording = true, testing = false, wake = true;
     int pending = 3, decodes = 4, resets = 0;
     void EnableVoiceProcessing(bool value) { recording = value; }
     void EnableAudioTesting(bool value) { testing = value; }
+    void EnableWakeWordDetection(bool value) { wake = value; }
     void ResetDecoder() { decodes = 0; ++resets; }
     bool PopPacketFromSendQueue() { if (!pending) return false; --pending; return true; }
 };
@@ -145,6 +177,10 @@ struct Protocol {
     }
 };
 struct Application {
+    enum class TouchPrompt { None, Greeting, Farewell };
+    TouchPrompt touch_prompt_ = TouchPrompt::None;
+    PromptPlayer touch_prompt_player_;
+    NotifyPlayer notify_player_;
     unsigned events = 0;
     unsigned* event_group_ = &events;
     DeviceState state = kDeviceStateIdle;
@@ -159,7 +195,7 @@ struct Application {
     ListeningMode GetDefaultListeningMode() { return kListeningModeAutoStop; }
     void SetListeningMode(ListeningMode mode) { listening_mode_ = mode; state = kDeviceStateListening; }
     void AbortSpeaking(AbortReason) { aborted_ = true; ++protocol_->aborts; }
-    void StopNotification() { state = kDeviceStateIdle; }
+    void StopNotification();
     void Schedule(std::function<void()> callback) { scheduled.push_back(std::move(callback)); }
     void RunScheduled() {
         auto tasks = std::move(scheduled); scheduled.clear(); for (auto& task : tasks) task();
@@ -167,6 +203,10 @@ struct Application {
     void ToggleConversation();
     void HandleToggleConversationEvent();
     void EndConversation();
+    void EndConversationWithFarewell();
+    void StartTouchPrompt(TouchPrompt prompt);
+    void HandleTouchPromptDrained();
+    void HandleClosed();
     void HandleToggleChatEvent();
     void ContinueOpenAudioChannel(ListeningMode mode);
     void ContinueWakeWordInvoke(const std::string& wake_word);
@@ -235,6 +275,59 @@ int main() {
 }
 '''
         self.compile_and_run(platform + methods + driver)
+        prompt_driver = r'''
+int main() {
+    for (bool deferred : {false, true}) {
+        Application a;
+        a.protocol_->deferred_close = deferred;
+        a.protocol_->on_close = [&] { a.Schedule([&] { a.HandleClosed(); }); };
+        a.HandleToggleConversationEvent();
+        assert(a.touch_prompt_ == Application::TouchPrompt::Greeting);
+        assert(a.state == kDeviceStateNotifying && a.protocol_->opens == 0);
+        assert(!a.audio_service_.recording && !a.audio_service_.wake);
+        assert(a.touch_prompt_player_.sound == "greeting");
+        a.TtsStart(); assert(a.state == kDeviceStateNotifying); // stale remote speech ignored
+        a.HandleTouchPromptDrained(); assert(a.protocol_->opens == 0);
+        a.touch_prompt_player_.drained = true;
+        a.HandleTouchPromptDrained();
+        assert(a.state == kDeviceStateConnecting && a.protocol_->opens == 0);
+        a.RunScheduled(); assert(a.state == kDeviceStateListening);
+        assert(!a.play_popup_on_listening_); // no second beep after the spoken greeting
+        a.TtsStart(); assert(a.state == kDeviceStateSpeaking);
+        a.HandleToggleConversationEvent();
+        assert(a.state == kDeviceStateNotifying && a.conversation_stopped_);
+        assert(a.touch_prompt_ == Application::TouchPrompt::Farewell);
+        assert(!a.protocol_->opened && a.protocol_->stops == 1 && a.protocol_->aborts == 1);
+        assert(!a.audio_service_.recording && !a.audio_service_.wake);
+        assert(a.touch_prompt_player_.sound == "farewell");
+        if (a.protocol_->pending_close) a.protocol_->pending_close();
+        a.RunScheduled(); assert(a.state == kDeviceStateNotifying); // late close cannot cut goodbye
+        a.HandleToggleConversationEvent(); assert(a.touch_prompt_player_.starts == 2);
+        a.TtsStart(); a.TtsStop(); assert(a.state == kDeviceStateNotifying);
+        a.touch_prompt_player_.drained = true;
+        a.HandleTouchPromptDrained();
+        assert(a.state == kDeviceStateIdle && a.protocol_->opens == 1);
+        assert(a.touch_prompt_ == Application::TouchPrompt::None);
+    }
+    Application cancelled;
+    cancelled.HandleToggleConversationEvent();
+    cancelled.HandleToggleConversationEvent(); // second tap during greeting
+    assert(cancelled.touch_prompt_ == Application::TouchPrompt::Farewell);
+    cancelled.touch_prompt_player_.drained = true;
+    cancelled.HandleTouchPromptDrained(); cancelled.RunScheduled();
+    assert(cancelled.state == kDeviceStateIdle && cancelled.protocol_->opens == 0);
+    Application disconnected;
+    disconnected.HandleToggleConversationEvent();
+    disconnected.StopNotification(); // network error cancels a local prompt too
+    disconnected.touch_prompt_player_.drained = true;
+    disconnected.HandleTouchPromptDrained(); disconnected.RunScheduled();
+    assert(disconnected.state == kDeviceStateIdle && disconnected.protocol_->opens == 0);
+}
+'''
+        self.compile_and_run(platform.replace(
+            "#define CONFIG_SPARKBOT_TOUCH_CONVERSATION 0",
+            "#define CONFIG_SPARKBOT_TOUCH_CONVERSATION 1",
+        ) + methods + prompt_driver)
 
 
 if __name__ == "__main__":

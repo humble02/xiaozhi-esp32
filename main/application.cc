@@ -22,7 +22,7 @@
 
 #define TAG "Application"
 
-Application::Application() : notify_player_(audio_service_) {
+Application::Application() : notify_player_(audio_service_), touch_prompt_player_(audio_service_) {
     event_group_ = xEventGroupCreate();
 
 #if CONFIG_USE_DEVICE_AEC && CONFIG_USE_SERVER_AEC
@@ -219,6 +219,7 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
+            HandleTouchPromptDrained();
             if (audio_service_.IsPlaybackIdle()) {
                 notify_player_.OnPlaybackDrained();
             }
@@ -590,6 +591,11 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            // A close callback from the ended cloud session must not interrupt
+            // the local farewell or a newly started greeting.
+            if (touch_prompt_ != TouchPrompt::None) {
+                return;
+            }
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -807,15 +813,29 @@ void Application::ToggleConversation() {
 }
 
 void Application::HandleToggleConversationEvent() {
+    if (touch_prompt_ == TouchPrompt::Greeting) {
+        StopNotification();
+        EndConversationWithFarewell();
+        return;
+    }
+    if (touch_prompt_ == TouchPrompt::Farewell) {
+        return;  // Finish one farewell; ignore extra touches until back in idle.
+    }
     switch (GetDeviceState()) {
         case kDeviceStateIdle:
+#if CONFIG_SPARKBOT_TOUCH_CONVERSATION
+            if (protocol_) {
+                StartTouchPrompt(TouchPrompt::Greeting);
+            }
+#else
             play_popup_on_listening_ = true;
             HandleToggleChatEvent();
+#endif
             break;
         case kDeviceStateConnecting:
         case kDeviceStateListening:
         case kDeviceStateSpeaking:
-            EndConversation();
+            EndConversationWithFarewell();
             break;
         case kDeviceStateNotifying:
             StopNotification();
@@ -824,6 +844,67 @@ void Application::HandleToggleConversationEvent() {
             // Touch must not skip activation or enter the audio test/configuration modes.
             break;
     }
+}
+
+void Application::StartTouchPrompt(TouchPrompt prompt) {
+    if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
+        return;
+    }
+    conversation_stopped_ = true;
+    pending_listening_start_ = false;
+    play_popup_on_listening_ = false;
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.EnableWakeWordDetection(false);
+    audio_service_.ResetDecoder();
+    xEventGroupClearBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
+    touch_prompt_ = prompt;
+    if (!SetDeviceState(kDeviceStateNotifying)) {
+        touch_prompt_ = TouchPrompt::None;
+        return;
+    }
+    auto& board = Board::GetInstance();
+    board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    board.GetDisplay()->SetChatMessage("assistant", prompt == TouchPrompt::Greeting
+                                                        ? "您好，找我有什么事情吗？"
+                                                        : "再见啊，下次有需求可以再来找我");
+    const auto& sound = prompt == TouchPrompt::Greeting ? Lang::Sounds::OGG_TOUCH_GREETING
+                                                        : Lang::Sounds::OGG_TOUCH_FAREWELL;
+    if (!touch_prompt_player_.Start(sound)) {
+        ESP_LOGE(TAG, "Cannot play touch prompt");
+        StopNotification();
+        if (prompt == TouchPrompt::Greeting) {
+            HandleToggleChatEvent();
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Touch %s prompt started; microphone disabled",
+             prompt == TouchPrompt::Greeting ? "greeting" : "farewell");
+}
+
+void Application::HandleTouchPromptDrained() {
+    if (!touch_prompt_player_.OnPlaybackDrained()) {
+        return;
+    }
+    const auto prompt = touch_prompt_;
+    touch_prompt_ = TouchPrompt::None;
+    if (GetDeviceState() != kDeviceStateNotifying) {
+        return;
+    }
+    SetDeviceState(kDeviceStateIdle);
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    ESP_LOGI(TAG, "Touch %s prompt finished",
+             prompt == TouchPrompt::Greeting ? "greeting" : "farewell");
+    if (prompt == TouchPrompt::Greeting) {
+        // Connect only after all playback (including its DMA tail) has drained.
+        HandleToggleChatEvent();
+    }
+}
+
+void Application::EndConversationWithFarewell() {
+    EndConversation();
+#if CONFIG_SPARKBOT_TOUCH_CONVERSATION
+    StartTouchPrompt(TouchPrompt::Farewell);
+#endif
 }
 
 void Application::EndConversation() {
@@ -904,7 +985,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 
     if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
         MAIN_EVENT_TOGGLE_CONVERSATION) {
-        EndConversation();
+        EndConversationWithFarewell();
         return;
     }
 
@@ -916,7 +997,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         const bool opened = protocol_->OpenAudioChannel();
         if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
             MAIN_EVENT_TOGGLE_CONVERSATION) {
-            EndConversation();
+            EndConversationWithFarewell();
             return;
         }
         if (!opened) {
@@ -931,7 +1012,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // before enabling microphone capture when that wait completes.
     if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
         MAIN_EVENT_TOGGLE_CONVERSATION) {
-        EndConversation();
+        EndConversationWithFarewell();
         return;
     }
     SetListeningMode(mode);
@@ -1061,7 +1142,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     }
     if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
         MAIN_EVENT_TOGGLE_CONVERSATION) {
-        EndConversation();
+        EndConversationWithFarewell();
         return;
     }
 
@@ -1073,7 +1154,7 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
         const bool opened = protocol_->OpenAudioChannel();
         if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
             MAIN_EVENT_TOGGLE_CONVERSATION) {
-            EndConversation();
+            EndConversationWithFarewell();
             return;
         }
         if (!opened) {
@@ -1104,6 +1185,11 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
 
 void Application::HandleStateChangedEvent() {
     DeviceState new_state = state_machine_.GetState();
+    if (new_state != kDeviceStateNotifying && touch_prompt_ != TouchPrompt::None) {
+        touch_prompt_player_.Stop();
+        touch_prompt_ = TouchPrompt::None;
+        audio_service_.ResetDecoder();
+    }
     clock_ticks_ = 0;
     // Any state change invalidates a pending deferred listening start;
     // the Listening case below re-arms it when needed.
@@ -1166,7 +1252,8 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateNotifying:
             display->SetStatus(Lang::Strings::SPEAKING);
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
+            audio_service_.EnableWakeWordDetection(touch_prompt_ == TouchPrompt::None &&
+                                                   audio_service_.IsAfeWakeWord());
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1323,6 +1410,8 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
 }
 
 void Application::StopNotification() {
+    touch_prompt_player_.Stop();
+    touch_prompt_ = TouchPrompt::None;
     notify_player_.Stop();
     audio_service_.ResetDecoder();
     auto& board = Board::GetInstance();

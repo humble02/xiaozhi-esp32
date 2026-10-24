@@ -14,12 +14,13 @@
 #include <cstdint>
 #include <vector>
 
-#include "protocol.h"
-#include "ota.h"
 #include "audio_service.h"
 #include "device_state.h"
 #include "device_state_machine.h"
+#include "local_prompt_player.h"
 #include "notify/notify_player.h"
+#include "ota.h"
+#include "protocol.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -148,6 +149,9 @@ private:
     std::string startup_wake_word_hint_message_;
     AudioService audio_service_;
     NotifyPlayer notify_player_;
+    LocalPromptPlayer touch_prompt_player_;
+    enum class TouchPrompt { None, Greeting, Farewell };
+    TouchPrompt touch_prompt_ = TouchPrompt::None;
     uint32_t notification_playback_id_ = 0;
     std::unique_ptr<Ota> ota_;
 
@@ -170,6 +174,9 @@ private:
     void HandleToggleChatEvent();
     void HandleToggleConversationEvent();
     void EndConversation();
+    void EndConversationWithFarewell();
+    void StartTouchPrompt(TouchPrompt prompt);
+    void HandleTouchPromptDrained();
     void HandleStartListeningEvent();
     void HandleStopListeningEvent();
     void HandleNetworkConnectedEvent();
