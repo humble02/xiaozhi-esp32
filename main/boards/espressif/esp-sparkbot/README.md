@@ -43,6 +43,22 @@ python scripts/build.py espressif/esp-sparkbot --name esp-sparkbot-touch --langu
 
 2026-10-24 原版、带问候/告别语的触摸版、代表性 ESP32-C3 固件及 149 项主机测试均已通过，详见 [验证记录](../../../../docs/sparkbot-touch-validation.zh-CN.md)。
 
+## 自定义唤醒词：你好小白
+
+2026-10-24，本地触摸版实物已只更新 `assets` 资源分区，改用 MultiNet7 中文命令词识别“你好小白”。用户确认新唤醒词、触摸开始和结束均正常。程序仍为带“湾湾小何”提示语的 2.5.3 触摸版，配网及激活信息保留。
+
+配置输入是本目录的 [wakeword-xiaobai.conf](wakeword-xiaobai.conf)：`CONFIG_CUSTOM_WAKE_WORD` 为拼音，`CONFIG_CUSTOM_WAKE_WORD_DISPLAY` 为显示文字。修改配置后须重新生成并烧录资源，单独保存文本不会改变设备。
+
+模型取自官方 ESP-SR **2.4.7**（与固件依赖一致），源码提交 `2f8c4b0459db5bbb39abd77adae27962d6d94bcb`，使用 `model/multinet_model/mn7_cn` 和 `fst`。在仓库根目录执行以下命令，用已备份的现有资源保留字体、表情和其他界面数据：
+
+```sh
+python scripts/build_default_assets.py --sdkconfig main/boards/espressif/esp-sparkbot/wakeword-xiaobai.conf --base_assets <原资源.bin> --esp_sr_model_path <esp-sr-2.4.7/model> --output <输出资源.bin> --max_size 0x800000
+```
+
+当前实物已核对：16MB Flash，资源分区从 `0x800000` 开始，大小 `0x800000`。新资源为 4,053,692 字节，SHA256 为 `3bdd2958dba275531b84da7c3fe01b00af91e2102c3ed44ce99239c2a658c0a4`，13 项资源脚本测试通过。启动日志确认加载 `mn7_cn`、命令 `ni hao xiao bai`，并进入正常联网对话。
+
+这是资源更新配置，并非 `scripts/build.py` 的默认构建预设；普通重编译生成的默认资源仍可能使用“你好小智”，重新全量烧录后须再应用本资源。烧录其他设备前应先核对分区、备份，不能直接套用当前地址。
+
 ## 天气与语音服务
 
 本次增加触摸交互入口；天气查询继续由所接服务端或 MCP 工具提供。没有把天气网页抓取、API Key 或昨天工程的私有配置写入固件仓库。详细比较见 [语音与天气实现研究](../../../../docs/sparkbot-touch-research.zh-CN.md)。
