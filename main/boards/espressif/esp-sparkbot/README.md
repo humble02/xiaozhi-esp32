@@ -23,7 +23,7 @@
 - 采用 ESP-IDF 6 的 `esp_driver_touch_sens`，没有继续使用旧版 `touch_pad` / `touch_element`。上电标定期间不要触碰电极。
 - 触摸版屏幕 SPI 使用昨天本地工程采用的 20MHz。
 - GPIO46 是屏幕背光。触摸版给 ES8311 传入 `GPIO_NUM_NC` 作为 PA 控制脚，避免开关音频时改动背光；音频输入、输出继续共用原有 ES8311 全双工设备。
-- 原版 `esp-sparkbot` 保持原有引脚配置与按钮语义，触摸驱动不会参与其构建。
+- 原版 `esp-sparkbot` 保持原有引脚配置与按钮语义，顶部触摸处理源码不会参与其构建。底层触摸组件按 S3 目标声明依赖，以兼容 ESP-IDF 在加载配置前进行的依赖扫描。
 
 ## 编译
 
@@ -36,6 +36,8 @@ python scripts/build.py espressif/esp-sparkbot --name esp-sparkbot-touch --langu
 ```
 
 也可通过 GitHub Actions 的 `Validate SparkBot touch` 工作流编译原版、触摸版，成功后下载对应固件 artifact。编译成功只说明软件构建通过，仍需实物验证麦克风、扬声器、屏幕、触摸和联网。
+
+2026-10-24 两种固件构建及 148 项主机测试均已通过，详见 [验证记录](../../../../docs/sparkbot-touch-validation.zh-CN.md)。
 
 ## 天气与语音服务
 
