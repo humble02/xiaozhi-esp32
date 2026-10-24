@@ -1,0 +1,5 @@
+esptool==4.8.1
+paho-mqtt==2.1.0
+cryptography>=43,<51
+imageio-ffmpeg==0.6.0
+pywin32>=306; sys_platform == "win32"
