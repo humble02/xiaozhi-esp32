@@ -1145,9 +1145,12 @@ if(CONFIG_BOARD_TYPE_ESP_VOCAT AND IDF_VERSION_MAJOR LESS 6)
         espressif__touch_button_sensor
     )
 endif()
-if(CONFIG_SPARKBOT_TOUCH_CONVERSATION)
+if(IDF_TARGET STREQUAL "esp32s3")
+    # Dependencies are scanned before sdkconfig is loaded. A CONFIG_* condition
+    # here would hide the driver from ESP-IDF's minimal-build dependency graph.
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_driver_touch_sens)
-else()
+endif()
+if(NOT CONFIG_SPARKBOT_TOUCH_CONVERSATION)
     # Board source discovery is recursive; omit the optional driver in stock builds.
     list(FILTER SOURCES EXCLUDE REGEX "/sparkbot_touch\\.cc$")
 endif()
