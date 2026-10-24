@@ -5,6 +5,6 @@
 
 2026-10-24 使用 Windows 本机 Microsoft Huihui Desktop 简体中文音色离线合成，语速 -1、音量 100，再转成单声道 16kHz Opus OGG。设备运行时直接播放，无需 TTS API、网络或模型生成这两句话。
 
-转码参数：`-ac 1 -ar 16000 -c:a libopus -b:a 20k -application voip -frame_duration 60`。
+转码参数：`-af apad=pad_dur=0.25 -ac 1 -ar 16000 -c:a libopus -b:a 20k -application voip -frame_duration 60`。
 
-原始 WAV 时长约为 3.79 秒和 5.05 秒。OGG 帧为 60ms，播放可能包含不足一帧的结尾填充。提示语文本与语音文件必须一起修改。
+原始 WAV 时长约为 3.79 秒和 5.05 秒。每句追加 250ms 静音，覆盖 SparkBot 的 I2S DMA 缓冲尾部（6×240 帧，在 16kHz 下为 90ms），再允许恢复收音或唤醒。OGG 帧为 60ms，播放可能另有不足一帧的结尾填充。提示语文本与语音文件必须一起修改。

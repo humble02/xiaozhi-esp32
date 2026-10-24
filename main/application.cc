@@ -895,7 +895,8 @@ void Application::HandleTouchPromptDrained() {
     ESP_LOGI(TAG, "Touch %s prompt finished",
              prompt == TouchPrompt::Greeting ? "greeting" : "farewell");
     if (prompt == TouchPrompt::Greeting) {
-        // Connect only after all playback (including its DMA tail) has drained.
+        // Embedded prompts end with 250 ms of silence, covering the I2S DMA
+        // tail before microphone capture can start after queue drain.
         HandleToggleChatEvent();
     }
 }
