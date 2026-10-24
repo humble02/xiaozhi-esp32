@@ -10,6 +10,15 @@
                 "CONFIG_CAMERA_OV2640_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
                 "CONFIG_CAMERA_OV2640_DVP_YUV422_240X240_25FPS=y"
             ]
+        },
+        {
+            "name": "esp-sparkbot-touch",
+            "sdkconfig_append": [
+                "CONFIG_SPARKBOT_TOUCH_CONVERSATION=y",
+                "CONFIG_CAMERA_OV2640=y",
+                "CONFIG_CAMERA_OV2640_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
+                "CONFIG_CAMERA_OV2640_DVP_YUV422_240X240_25FPS=y"
+            ]
         }
     ]
 }

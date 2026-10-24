@@ -7,6 +7,10 @@
 #include "settings.h"
 #include "wifi_board.h"
 
+#if CONFIG_SPARKBOT_TOUCH_CONVERSATION
+#include "sparkbot_touch.h"
+#endif
+
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
 #include <driver/uart.h>
@@ -17,6 +21,12 @@
 #include "esp_video.h"
 
 #define TAG "esp_sparkbot"
+
+#if CONFIG_SPARKBOT_TOUCH_CONVERSATION
+static constexpr bool kTouchConversationEnabled = true;
+#else
+static constexpr bool kTouchConversationEnabled = false;
+#endif
 
 class SparkBotEs8311AudioCodec : public Es8311AudioCodec {
 private:
@@ -32,7 +42,7 @@ public:
         if (enable == output_enabled_) {
             return;
         }
-        if (enable) {
+        if (enable || kTouchConversationEnabled) {
             Es8311AudioCodec::EnableOutput(enable);
         } else {
             // Nothing todo because the display io and PA io conflict
@@ -47,6 +57,9 @@ private:
     Display* display_;
     EspVideo* camera_;
     light_mode_t light_mode_ = LIGHT_MODE_ALWAYS_ON;
+#if CONFIG_SPARKBOT_TOUCH_CONVERSATION
+    SparkBotTouch touch_;
+#endif
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -98,7 +111,7 @@ private:
         io_config.cs_gpio_num = DISPLAY_CS_GPIO;
         io_config.dc_gpio_num = DISPLAY_DC_GPIO;
         io_config.spi_mode = 0;
-        io_config.pclk_hz = 40 * 1000 * 1000;
+        io_config.pclk_hz = (kTouchConversationEnabled ? 20 : 40) * 1000 * 1000;
         io_config.trans_queue_depth = 10;
         io_config.lcd_cmd_bits = 8;
         io_config.lcd_param_bits = 8;
@@ -289,13 +302,21 @@ public:
         InitializeEchoUart();
         InitializeTools();
         GetBacklight()->RestoreBrightness();
+#if CONFIG_SPARKBOT_TOUCH_CONVERSATION
+        if (esp_err_t error = touch_.Start(); error != ESP_OK) {
+            ESP_LOGE(TAG, "Top touch unavailable: %s; use BOOT or voice wake-up",
+                     esp_err_to_name(error));
+        }
+#endif
     }
 
     virtual AudioCodec* GetAudioCodec() override {
+        // GPIO46 belongs to the LCD backlight; the touch variant leaves PA unmanaged.
         static SparkBotEs8311AudioCodec audio_codec(
             i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
             AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
-            AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR);
+            AUDIO_I2S_GPIO_DIN, kTouchConversationEnabled ? GPIO_NUM_NC : AUDIO_CODEC_PA_PIN,
+            AUDIO_CODEC_ES8311_ADDR);
         return &audio_codec;
     }
 

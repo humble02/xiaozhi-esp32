@@ -37,6 +37,7 @@
 #define MAIN_EVENT_STATE_CHANGED        (1 << 12)
 #define MAIN_EVENT_PLAYBACK_DRAINED     (1 << 13)
 #define MAIN_EVENT_STARTUP_HINT_TIMEOUT (1 << 14)
+#define MAIN_EVENT_TOGGLE_CONVERSATION (1 << 15)
 
 enum AecMode {
     kAecOff,
@@ -96,6 +97,10 @@ public:
      */
     void ToggleChatState();
 
+    // Touch control: start from idle, end the entire conversation otherwise.
+    // Thread-safe; call from a task, never directly from an ISR.
+    void ToggleConversation();
+
     /**
      * Start listening (event-based, thread-safe)
      * Sends MAIN_EVENT_START_LISTENING to be handled in Run()
@@ -152,6 +157,7 @@ private:
     bool startup_completed_ = false;
     bool pending_startup_wake_word_hint_ = false;
     bool aborted_ = false;
+    bool conversation_stopped_ = false;  // Reject late TTS after an explicit touch stop.
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
@@ -162,6 +168,8 @@ private:
     // Event handlers
     void HandleStateChangedEvent();
     void HandleToggleChatEvent();
+    void HandleToggleConversationEvent();
+    void EndConversation();
     void HandleStartListeningEvent();
     void HandleStopListeningEvent();
     void HandleNetworkConnectedEvent();

@@ -187,7 +187,8 @@ void Application::Run() {
         MAIN_EVENT_VAD_CHANGE | MAIN_EVENT_CLOCK_TICK | MAIN_EVENT_ERROR |
         MAIN_EVENT_NETWORK_CONNECTED | MAIN_EVENT_NETWORK_DISCONNECTED | MAIN_EVENT_TOGGLE_CHAT |
         MAIN_EVENT_START_LISTENING | MAIN_EVENT_STOP_LISTENING | MAIN_EVENT_ACTIVATION_DONE |
-        MAIN_EVENT_STATE_CHANGED | MAIN_EVENT_PLAYBACK_DRAINED | MAIN_EVENT_STARTUP_HINT_TIMEOUT;
+        MAIN_EVENT_STATE_CHANGED | MAIN_EVENT_PLAYBACK_DRAINED | MAIN_EVENT_STARTUP_HINT_TIMEOUT |
+        MAIN_EVENT_TOGGLE_CONVERSATION;
 
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
@@ -240,6 +241,12 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_STOP_LISTENING) {
             HandleStopListeningEvent();
+        }
+
+        if (bits & MAIN_EVENT_TOGGLE_CONVERSATION) {
+            HandleToggleConversationEvent();
+            // A wake event captured before the touch must not reopen this conversation.
+            bits &= ~MAIN_EVENT_WAKE_WORD_DETECTED;
         }
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
@@ -636,11 +643,17 @@ void Application::InitializeProtocol() {
             }
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
+                    if (conversation_stopped_) {
+                        return;
+                    }
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    if (conversation_stopped_) {
+                        return;
+                    }
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -658,8 +671,11 @@ void Application::InitializeProtocol() {
                         glyphs.clear();
                     }
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
-                    Schedule([display, message = std::string(text->valuestring),
+                    Schedule([this, display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
+                        if (conversation_stopped_) {
+                            return;
+                        }
                         display->AddTextGlyphs(glyphs, bpp);
                         display->SetChatMessage("assistant", message.c_str());
                     });
@@ -786,6 +802,53 @@ void Application::DismissAlert() {
 
 void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT); }
 
+void Application::ToggleConversation() {
+    xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION);
+}
+
+void Application::HandleToggleConversationEvent() {
+    switch (GetDeviceState()) {
+        case kDeviceStateIdle:
+            play_popup_on_listening_ = true;
+            HandleToggleChatEvent();
+            break;
+        case kDeviceStateConnecting:
+        case kDeviceStateListening:
+        case kDeviceStateSpeaking:
+            EndConversation();
+            break;
+        case kDeviceStateNotifying:
+            StopNotification();
+            break;
+        default:
+            // Touch must not skip activation or enter the audio test/configuration modes.
+            break;
+    }
+}
+
+void Application::EndConversation() {
+    conversation_stopped_ = true;
+    pending_listening_start_ = false;
+    play_popup_on_listening_ = false;
+    SetDeviceState(kDeviceStateIdle);
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.ResetDecoder();
+    xEventGroupClearBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
+    while (audio_service_.PopPacketFromSendQueue()) {
+        // Discard microphone audio captured before stopping.
+    }
+    if (protocol_) {
+        if (protocol_->IsAudioChannelOpened()) {
+            protocol_->SendStopListening();
+            AbortSpeaking(kAbortReasonNone);
+        }
+        // Also release a partially opened or failed channel.
+        protocol_->CloseAudioChannel();
+    }
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    ESP_LOGI(TAG, "Conversation ended by touch");
+}
+
 void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING); }
 
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
@@ -817,6 +880,7 @@ void Application::HandleToggleChatEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        conversation_stopped_ = false;
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -838,12 +902,24 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         return;
     }
 
+    if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
+        MAIN_EVENT_TOGGLE_CONVERSATION) {
+        EndConversation();
+        return;
+    }
+
     // Switch to performance mode before connecting to reduce latency
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
     if (!protocol_->IsAudioChannelOpened()) {
-        if (!protocol_->OpenAudioChannel()) {
+        const bool opened = protocol_->OpenAudioChannel();
+        if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
+            MAIN_EVENT_TOGGLE_CONVERSATION) {
+            EndConversation();
+            return;
+        }
+        if (!opened) {
             // Return to idle so the device is not stuck in the connecting
             // state (not every failure path reports a network error)
             SetDeviceState(kDeviceStateIdle);
@@ -851,6 +927,13 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         }
     }
 
+    // Opening the transport may wait for a server hello. Honor a second touch
+    // before enabling microphone capture when that wait completes.
+    if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
+        MAIN_EVENT_TOGGLE_CONVERSATION) {
+        EndConversation();
+        return;
+    }
     SetListeningMode(mode);
 }
 
@@ -877,6 +960,7 @@ void Application::HandleStartListeningEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        conversation_stopped_ = false;
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
@@ -885,6 +969,7 @@ void Application::HandleStartListeningEvent() {
         }
         SetListeningMode(kListeningModeManualStop);
     } else if (state == kDeviceStateSpeaking) {
+        conversation_stopped_ = false;
         AbortSpeaking(kAbortReasonNone);
         SetListeningMode(kListeningModeManualStop);
     }
@@ -946,6 +1031,7 @@ void Application::HandleWakeWordDetectedEvent() {
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
     // Must run in the main task with the device in idle state
+    conversation_stopped_ = false;
     audio_service_.EncodeWakeWord();
 
     // Always pass through the connecting state, even if the audio channel is
@@ -973,13 +1059,24 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     if (GetDeviceState() != kDeviceStateConnecting) {
         return;
     }
+    if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
+        MAIN_EVENT_TOGGLE_CONVERSATION) {
+        EndConversation();
+        return;
+    }
 
     // Switch to performance mode before connecting to reduce latency
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
     if (!protocol_->IsAudioChannelOpened()) {
-        if (!protocol_->OpenAudioChannel()) {
+        const bool opened = protocol_->OpenAudioChannel();
+        if (xEventGroupClearBits(event_group_, MAIN_EVENT_TOGGLE_CONVERSATION) &
+            MAIN_EVENT_TOGGLE_CONVERSATION) {
+            EndConversation();
+            return;
+        }
+        if (!opened) {
             // Return to idle so the device is not stuck in the connecting
             // state (not every failure path reports a network error), and
             // wake word detection is re-enabled by the idle state handler.

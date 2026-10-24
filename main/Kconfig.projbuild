@@ -6,6 +6,33 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+config SPARKBOT_TOUCH_CONVERSATION
+    bool "SparkBot: touch to start/end a conversation"
+    depends on BOARD_TYPE_ESP_SPARKBOT
+    default n
+    help
+        Use the built-in capacitive top pad with the ESP-IDF 6 touch driver.
+        Touch once to listen and again to stop capture, playback and the audio session.
+        The esp-sparkbot-touch release variant enables this option.
+
+config SPARKBOT_TOUCH_CHANNEL
+    int "SparkBot top touch channel (GPIO number)"
+    depends on SPARKBOT_TOUCH_CONVERSATION
+    range 1 3
+    default 1
+    help
+        The original SparkBot BSP maps the top confirm pad to channel 1 / GPIO1.
+        Do not enable the old ADC button driver on the same pin.
+
+config SPARKBOT_TOUCH_THRESHOLD_PERMILLE
+    int "SparkBot touch threshold (per mille of calibrated baseline)"
+    depends on SPARKBOT_TOUCH_CONVERSATION
+    range 1 200
+    default 35
+    help
+        Default 35 means 3.5 percent, matching the original top pad sensitivity.
+        Keep fingers off the pad during startup calibration.
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS if !USE_EMOTE_MESSAGE_STYLE

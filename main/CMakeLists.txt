@@ -1145,6 +1145,12 @@ if(CONFIG_BOARD_TYPE_ESP_VOCAT AND IDF_VERSION_MAJOR LESS 6)
         espressif__touch_button_sensor
     )
 endif()
+if(CONFIG_SPARKBOT_TOUCH_CONVERSATION)
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_driver_touch_sens)
+else()
+    # Board source discovery is recursive; omit the optional driver in stock builds.
+    list(FILTER SOURCES EXCLUDE REGEX "/sparkbot_touch\\.cc$")
+endif()
 if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
         esp_driver_sdmmc

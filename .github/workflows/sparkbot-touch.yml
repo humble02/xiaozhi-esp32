@@ -1,0 +1,39 @@
+name: Validate SparkBot touch
+
+on:
+  push:
+    branches: [feat/sparkbot-touch-conversation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y g++-14 libcjson-dev pkg-config
+      - run: python -m pip install pillow
+      - run: python -m unittest discover -s scripts/tests -v
+        env:
+          CXX: g++-14
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [esp-sparkbot, esp-sparkbot-touch]
+    container:
+      image: espressif/idf:release-v6.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build SparkBot variant
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          python scripts/build.py espressif/esp-sparkbot --name "${{ matrix.variant }}" --language zh-CN --zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.variant }}-firmware
+          path: releases/*.zip
